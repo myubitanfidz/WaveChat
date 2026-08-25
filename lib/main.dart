@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:bluetooth_offline_chat/models/message_model.dart';
 import 'package:bluetooth_offline_chat/services/database_helper.dart';
+import 'package:bluetooth_offline_chat/services/permission_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -52,6 +53,26 @@ class _HomeScreenState extends State<HomeScreen> {
       'distance': '~25 m',
     },
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _checkPermissions();
+  }
+
+  Future<void> _checkPermissions() async {
+    final granted = await PermissionService.requestBluetoothPermissions();
+    if (!granted && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Izin Bluetooth & Lokasi diperlukan untuk mendeteksi perangkat sekitar.',
+          ),
+          duration: Duration(seconds: 4),
+        ),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
