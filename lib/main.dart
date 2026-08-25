@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import 'package:bluetooth_offline_chat/models/message_model.dart';
 import 'package:bluetooth_offline_chat/services/database_helper.dart';
 import 'package:bluetooth_offline_chat/services/permission_service.dart';
+import 'package:bluetooth_offline_chat/services/bluetooth_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -33,45 +36,100 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final List<Map<String, dynamic>> _dummyPeers = [
-    {
-      'name': 'Andi_Redmi9',
-      'uuid': 'UUID-9CAA-1B54',
-      'status': 'Online (Dekat)',
-      'distance': '~12 m',
-    },
-    {
-      'name': 'Budi_Laptop',
-      'uuid': 'UUID-7F21-44A9',
-      'status': 'Offline',
-      'distance': 'Terakhir terlihat 5m lalu',
-    },
-    {
-      'name': 'Citra_Phone',
-      'uuid': 'UUID-3B89-11C0',
-      'status': 'Online (Dekat)',
-      'distance': '~25 m',
-    },
-  ];
+  List<BluetoothDevice> _bondedDevices = [];
+  final List<BluetoothDiscoveryResult> _discoveryResults = [];
+  bool _isDiscovering = false;
+  StreamSubscription<BluetoothDiscoveryResult>? _discoveryStreamSubscription;
 
   @override
   void initState() {
     super.initState();
-    _checkPermissions();
+    _initBluetooth();
   }
 
-  Future<void> _checkPermissions() async {
+  Future<void> _initBluetooth() async {
     final granted = await PermissionService.requestBluetoothPermissions();
-    if (!granted && mounted) {
+    if (!granted) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Izin Bluetooth diperlukan')),
+        );
+      }
+      return;
+    }
+
+    final isEnabled = await BluetoothService.isBluetoothEnabled();
+    if (!isEnabled) {
+      await BluetoothService.requestEnableBluetooth();
+    }
+
+    _loadBondedDevices();
+  }
+
+  Future<void> _loadBondedDevices() async {
+    try {
+      final devices = await BluetoothService.getBondedDevices();
+      if (mounted) {
+        setState(() {
+          _bondedDevices = devices;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error get bonded devices: $e');
+    }
+  }
+
+  void _startScanning() {
+    setState(() {
+      _isDiscovering = true;
+      _discoveryResults.clear();
+    });
+
+    _discoveryStreamSubscription = BluetoothService.startDiscovery().listen(
+      (result) {
+        final existingIndex = _discoveryResults.indexWhere(
+          (element) => element.device.address == result.device.address,
+        );
+
+        setState(() {
+          if (existingIndex >= 0) {
+            _discoveryResults[existingIndex] = result;
+          } else {
+            _discoveryResults.add(result);
+          }
+        });
+      },
+      onDone: () {
+        if (mounted) {
+          setState(() {
+            _isDiscovering = false;
+          });
+        }
+      },
+      onError: (e) {
+        debugPrint('Discovery error: $e');
+        if (mounted) {
+          setState(() {
+            _isDiscovering = false;
+          });
+        }
+      },
+    );
+  }
+
+  Future<void> _makeDiscoverable() async {
+    final duration = await BluetoothService.requestDiscoverable(120);
+    if (mounted && duration != null && duration > 0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Izin Bluetooth & Lokasi diperlukan untuk mendeteksi perangkat sekitar.',
-          ),
-          duration: Duration(seconds: 4),
-        ),
+        SnackBar(content: Text('Perangkat terlihat selama $duration detik')),
       );
     }
+  }
+
+  @override
+  void dispose() {
+    _discoveryStreamSubscription?.cancel();
+    super.dispose();
   }
 
   @override
@@ -82,60 +140,103 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Pindai Ulang',
-            onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Memindai perangkat di sekitar...')),
-              );
-            },
+            icon: _isDiscovering
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh),
+            tooltip: 'Pindai Perangkat',
+            onPressed: _isDiscovering ? null : _startScanning,
           ),
         ],
       ),
-      body: ListView.separated(
+      body: ListView(
         padding: const EdgeInsets.all(8.0),
-        itemCount: _dummyPeers.length,
-        separatorBuilder: (context, index) => const Divider(height: 1),
-        itemBuilder: (context, index) {
-          final peer = _dummyPeers[index];
-          final isOnline = peer['status'].toString().contains('Online');
-
-          return ListTile(
-            leading: CircleAvatar(
-              backgroundColor: isOnline ? Colors.indigo : Colors.grey,
+        children: [
+          if (_bondedDevices.isNotEmpty) ...[
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
               child: Text(
-                peer['name'][0],
-                style: const TextStyle(color: Colors.white),
+                'Perangkat Tersimpan (Paired)',
+                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.indigo),
               ),
             ),
-            title: Text(
-              peer['name'],
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            subtitle: Text('${peer['uuid']} • ${peer['distance']}'),
-            trailing: Icon(
-              Icons.circle,
-              size: 12,
-              color: isOnline ? Colors.green : Colors.grey,
-            ),
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => ChatRoomScreen(peerName: peer['name']),
+            ..._bondedDevices.map(
+              (device) => ListTile(
+                leading: const CircleAvatar(
+                  backgroundColor: Colors.indigo,
+                  child: Icon(Icons.bluetooth, color: Colors.white),
                 ),
-              );
-            },
-          );
-        },
+                title: Text(device.name ?? 'Perangkat Tanpa Nama'),
+                subtitle: Text(device.address),
+                trailing: const Icon(Icons.link, color: Colors.green),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => ChatRoomScreen(
+                        peerName: device.name ?? device.address,
+                        peerAddress: device.address,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const Divider(),
+          ],
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
+            child: Text(
+              'Perangkat Baru Sekitar',
+              style: TextStyle(fontWeight: FontWeight.bold, color: Colors.indigo),
+            ),
+          ),
+          if (_discoveryResults.isEmpty)
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Center(
+                child: Text(
+                  _isDiscovering
+                      ? 'Sedang mencari perangkat Bluetooth...'
+                      : 'Tekan ikon refresh di atas untuk memindai.',
+                  style: const TextStyle(color: Colors.grey),
+                ),
+              ),
+            )
+          else
+            ..._discoveryResults.map(
+              (result) {
+                final device = result.device;
+                return ListTile(
+                  leading: const CircleAvatar(
+                    backgroundColor: Colors.grey,
+                    child: Icon(Icons.bluetooth_searching, color: Colors.white),
+                  ),
+                  title: Text(device.name ?? 'Unknown Device'),
+                  subtitle: Text('${device.address} • RSSI: ${result.rssi} dBm'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => ChatRoomScreen(
+                          peerName: device.name ?? device.address,
+                          peerAddress: device.address,
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+        ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Membuka mode penerima/beacon...')),
-          );
-        },
-        icon: const Icon(Icons.bluetooth_searching),
+        onPressed: _makeDiscoverable,
+        icon: const Icon(Icons.visibility),
         label: const Text('Buat Diri Terlihat'),
       ),
     );
@@ -144,7 +245,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
 class ChatRoomScreen extends StatefulWidget {
   final String peerName;
-  const ChatRoomScreen({super.key, required this.peerName});
+  final String peerAddress;
+  const ChatRoomScreen({
+    super.key,
+    required this.peerName,
+    required this.peerAddress,
+  });
 
   @override
   State<ChatRoomScreen> createState() => _ChatRoomScreenState();
@@ -163,7 +269,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
 
   Future<void> _loadMessages() async {
     try {
-      final data = await DatabaseHelper.instance.getMessages(widget.peerName);
+      final data = await DatabaseHelper.instance.getMessages(widget.peerAddress);
       if (mounted) {
         setState(() {
           _messages = data;
@@ -196,7 +302,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
         '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
 
     final newMessage = MessageModel(
-      peerAddress: widget.peerName,
+      peerAddress: widget.peerAddress,
       sender: 'me',
       text: text,
       timestamp: timeStr,
@@ -228,7 +334,18 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(widget.peerName)),
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.peerName, style: const TextStyle(fontSize: 16)),
+            Text(
+              widget.peerAddress,
+              style: const TextStyle(fontSize: 11, color: Colors.black54),
+            ),
+          ],
+        ),
+      ),
       body: Column(
         children: [
           Expanded(
