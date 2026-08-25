@@ -20,8 +20,9 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _createDB,
+      onUpgrade: _onUpgrade,
     );
   }
 
@@ -29,17 +30,36 @@ class DatabaseHelper {
     await db.execute('''
       CREATE TABLE messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id TEXT NOT NULL,
         peer_address TEXT NOT NULL,
         sender TEXT NOT NULL,
         text TEXT NOT NULL,
-        timestamp TEXT NOT NULL
+        timestamp TEXT NOT NULL,
+        status TEXT NOT NULL
       )
     ''');
+  }
+
+  Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute('ALTER TABLE messages ADD COLUMN message_id TEXT DEFAULT ""');
+      await db.execute('ALTER TABLE messages ADD COLUMN status TEXT DEFAULT "SENT"');
+    }
   }
 
   Future<int> insertMessage(MessageModel message) async {
     final db = await instance.database;
     return await db.insert('messages', message.toMap());
+  }
+
+  Future<int> updateMessageStatus(String messageId, String status) async {
+    final db = await instance.database;
+    return await db.update(
+      'messages',
+      {'status': status},
+      where: 'message_id = ?',
+      whereArgs: [messageId],
+    );
   }
 
   Future<List<MessageModel>> getMessages(String peerAddress) async {

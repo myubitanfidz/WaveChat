@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import 'package:bluetooth_offline_chat/models/message_model.dart';
@@ -284,7 +285,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
 
     if (success) {
       _connectionManager.listenMessages(
-        onMessageReceived: _handleIncomingMessage,
+        onMessageReceived: _handleIncomingRawPayload,
         onDisconnected: _handleDisconnected,
       );
     } else {
@@ -294,20 +295,43 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
     }
   }
 
-  void _handleIncomingMessage(String text) async {
-    final now = DateTime.now();
-    final timeStr =
-        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+  void _handleIncomingRawPayload(String rawPayload) async {
+    try {
+      final Map<String, dynamic> data = jsonDecode(rawPayload);
+      final type = data['type'];
 
-    final incomingMsg = MessageModel(
-      peerAddress: widget.peerAddress,
-      sender: 'other',
-      text: text,
-      timestamp: timeStr,
-    );
+      if (type == 'CHAT') {
+        final incomingId = data['id'] ?? '';
+        final body = data['body'] ?? '';
+        final timestamp = data['timestamp'] ?? '';
 
-    await DatabaseHelper.instance.insertMessage(incomingMsg);
-    _loadMessages();
+        final incomingMsg = MessageModel(
+          messageId: incomingId,
+          peerAddress: widget.peerAddress,
+          sender: 'other',
+          text: body,
+          timestamp: timestamp,
+          status: 'DELIVERED',
+        );
+
+        await DatabaseHelper.instance.insertMessage(incomingMsg);
+        _loadMessages();
+
+        // Kirim konfirmasi (ACK) balik ke pengirim
+        if (_isConnected) {
+          final ackPayload = jsonEncode({'type': 'ACK', 'id': incomingId});
+          await _connectionManager.sendMessage(ackPayload);
+        }
+      } else if (type == 'ACK') {
+        final ackId = data['id'];
+        if (ackId != null) {
+          await DatabaseHelper.instance.updateMessageStatus(ackId, 'DELIVERED');
+          _loadMessages();
+        }
+      }
+    } catch (e) {
+      debugPrint('Error parsing incoming payload: $e');
+    }
   }
 
   void _handleDisconnected() {
@@ -354,18 +378,21 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
     final now = DateTime.now();
     final timeStr =
         '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    final generatedMsgId = '${now.millisecondsSinceEpoch}_${widget.peerAddress.hashCode}';
 
     final newMessage = MessageModel(
+      messageId: generatedMsgId,
       peerAddress: widget.peerAddress,
       sender: 'me',
       text: text,
       timestamp: timeStr,
+      status: _isConnected ? 'SENT' : 'SENDING',
     );
 
     _textController.clear();
 
     if (_isConnected) {
-      await _connectionManager.sendMessage(text);
+      await _connectionManager.sendMessage(newMessage.toJsonPayload());
     }
 
     try {
@@ -379,6 +406,17 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
         });
         _scrollToBottom();
       }
+    }
+  }
+
+  IconData _getStatusIcon(String status) {
+    switch (status) {
+      case 'DELIVERED':
+        return Icons.done_all;
+      case 'SENT':
+        return Icons.done;
+      default:
+        return Icons.access_time;
     }
   }
 
@@ -462,12 +500,27 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                                 ),
                               ),
                               const SizedBox(height: 4),
-                              Text(
-                                msg.timestamp,
-                                style: TextStyle(
-                                  color: isMe ? Colors.white70 : Colors.black54,
-                                  fontSize: 11,
-                                ),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    msg.timestamp,
+                                    style: TextStyle(
+                                      color: isMe ? Colors.white70 : Colors.black54,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                  if (isMe) ...[
+                                    const SizedBox(width: 4),
+                                    Icon(
+                                      _getStatusIcon(msg.status),
+                                      size: 14,
+                                      color: msg.status == 'DELIVERED'
+                                          ? Colors.lightBlueAccent
+                                          : Colors.white70,
+                                    ),
+                                  ],
+                                ],
                               ),
                             ],
                           ),
