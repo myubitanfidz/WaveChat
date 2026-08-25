@@ -5,6 +5,7 @@ import 'package:bluetooth_offline_chat/models/message_model.dart';
 import 'package:bluetooth_offline_chat/services/database_helper.dart';
 import 'package:bluetooth_offline_chat/services/permission_service.dart';
 import 'package:bluetooth_offline_chat/services/bluetooth_service.dart';
+import 'package:bluetooth_offline_chat/services/bluetooth_connection_manager.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -259,12 +260,65 @@ class ChatRoomScreen extends StatefulWidget {
 class _ChatRoomScreenState extends State<ChatRoomScreen> {
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final BluetoothConnectionManager _connectionManager = BluetoothConnectionManager();
+
   List<MessageModel> _messages = [];
+  bool _isConnecting = true;
+  bool _isConnected = false;
 
   @override
   void initState() {
     super.initState();
     _loadMessages();
+    _initConnection();
+  }
+
+  Future<void> _initConnection() async {
+    final success = await _connectionManager.connect(widget.peerAddress);
+    if (!mounted) return;
+
+    setState(() {
+      _isConnecting = false;
+      _isConnected = success;
+    });
+
+    if (success) {
+      _connectionManager.listenMessages(
+        onMessageReceived: _handleIncomingMessage,
+        onDisconnected: _handleDisconnected,
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Gagal membuat koneksi RFCOMM ke perangkat.')),
+      );
+    }
+  }
+
+  void _handleIncomingMessage(String text) async {
+    final now = DateTime.now();
+    final timeStr =
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+
+    final incomingMsg = MessageModel(
+      peerAddress: widget.peerAddress,
+      sender: 'other',
+      text: text,
+      timestamp: timeStr,
+    );
+
+    await DatabaseHelper.instance.insertMessage(incomingMsg);
+    _loadMessages();
+  }
+
+  void _handleDisconnected() {
+    if (mounted) {
+      setState(() {
+        _isConnected = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Koneksi Bluetooth terputus.')),
+      );
+    }
   }
 
   Future<void> _loadMessages() async {
@@ -310,6 +364,10 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
 
     _textController.clear();
 
+    if (_isConnected) {
+      await _connectionManager.sendMessage(text);
+    }
+
     try {
       await DatabaseHelper.instance.insertMessage(newMessage);
       await _loadMessages();
@@ -326,6 +384,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
 
   @override
   void dispose() {
+    _connectionManager.disconnect();
     _textController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -339,9 +398,21 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(widget.peerName, style: const TextStyle(fontSize: 16)),
-            Text(
-              widget.peerAddress,
-              style: const TextStyle(fontSize: 11, color: Colors.black54),
+            Row(
+              children: [
+                Icon(
+                  Icons.circle,
+                  size: 8,
+                  color: _isConnected ? Colors.green : Colors.red,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  _isConnecting
+                      ? 'Menghubungkan...'
+                      : (_isConnected ? 'Terhubung' : 'Terputus'),
+                  style: const TextStyle(fontSize: 11, color: Colors.black54),
+                ),
+              ],
             ),
           ],
         ),
@@ -415,7 +486,9 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                     textInputAction: TextInputAction.send,
                     onSubmitted: (_) => _sendMessage(),
                     decoration: InputDecoration(
-                      hintText: 'Ketik pesan offline...',
+                      hintText: _isConnected
+                          ? 'Ketik pesan offline...'
+                          : 'Perangkat tidak terhubung...',
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(24.0),
                       ),
