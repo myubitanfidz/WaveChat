@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:bluetooth_offline_chat/models/message_model.dart';
+import 'package:bluetooth_offline_chat/services/database_helper.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const OfflineChatApp());
 }
 
@@ -29,7 +32,6 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  // Simulasi data perangkat/teman di sekitar (Dummy Data)
   final List<Map<String, dynamic>> _dummyPeers = [
     {
       'name': 'Andi_Redmi9',
@@ -96,7 +98,6 @@ class _HomeScreenState extends State<HomeScreen> {
               color: isOnline ? Colors.green : Colors.grey,
             ),
             onTap: () {
-              // Navigasi ke ruang percakapan
               Navigator.push(
                 context,
                 MaterialPageRoute(
@@ -130,105 +131,151 @@ class ChatRoomScreen extends StatefulWidget {
 
 class _ChatRoomScreenState extends State<ChatRoomScreen> {
   final TextEditingController _textController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  List<MessageModel> _messages = [];
 
-  // Simulasi riwayat chat lokal
-  final List<Map<String, dynamic>> _messages = [
-    {
-      'sender': 'other',
-      'text': 'Halo! Apakah sinyal Bluetooth sampai ke situ?',
-      'time': '10:00',
-    },
-    {
-      'sender': 'me',
-      'text': 'Sampai, koneksi RFCOMM aman tanpa internet!',
-      'time': '10:01',
-    },
-  ];
+  @override
+  void initState() {
+    super.initState();
+    _loadMessages();
+  }
 
-  void _sendMessage() {
-    if (_textController.text.trim().isEmpty) return;
-    setState(() {
-      _messages.add({
-        'sender': 'me',
-        'text': _textController.text.trim(),
-        'time': '10:05',
-      });
+  Future<void> _loadMessages() async {
+    try {
+      final data = await DatabaseHelper.instance.getMessages(widget.peerName);
+      if (mounted) {
+        setState(() {
+          _messages = data;
+        });
+        _scrollToBottom();
+      }
+    } catch (e) {
+      debugPrint('Error loading messages: $e');
+    }
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
     });
+  }
+
+  Future<void> _sendMessage() async {
+    final text = _textController.text.trim();
+    if (text.isEmpty) return;
+
+    final now = DateTime.now();
+    final timeStr =
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+
+    final newMessage = MessageModel(
+      peerAddress: widget.peerName,
+      sender: 'me',
+      text: text,
+      timestamp: timeStr,
+    );
+
     _textController.clear();
+
+    try {
+      await DatabaseHelper.instance.insertMessage(newMessage);
+      await _loadMessages();
+    } catch (e) {
+      debugPrint('Error inserting message: $e');
+      if (mounted) {
+        setState(() {
+          _messages.add(newMessage);
+        });
+        _scrollToBottom();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    _scrollController.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.peerName),
-      ),
+      appBar: AppBar(title: Text(widget.peerName)),
       body: Column(
         children: [
           Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.all(12.0),
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
-                final msg = _messages[index];
-                final isMe = msg['sender'] == 'me';
+            child: _messages.isEmpty
+                ? const Center(
+                    child: Text(
+                      'Belum ada pesan. Mulai percakapan!',
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  )
+                : ListView.builder(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.all(12.0),
+                    itemCount: _messages.length,
+                    itemBuilder: (context, index) {
+                      final msg = _messages[index];
+                      final isMe = msg.sender == 'me';
 
-                return Align(
-                  alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(vertical: 4.0),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14.0,
-                      vertical: 10.0,
-                    ),
-                    decoration: BoxDecoration(
-                      color: isMe
-                          ? Colors.indigo.shade600
-                          : Colors.grey.shade300,
-                      borderRadius: BorderRadius.circular(12.0),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: isMe
-                          ? CrossCastAlignEnd(CrossAxisAlignment.end)
-                          : CrossCastAlignStart(CrossAxisAlignment.start),
-                      children: [
-                        Text(
-                          msg['text'],
-                          style: TextStyle(
-                            color: isMe ? Colors.white : Colors.black87,
-                            fontSize: 15,
+                      return Align(
+                        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(vertical: 4.0),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14.0,
+                            vertical: 10.0,
+                          ),
+                          decoration: BoxDecoration(
+                            color: isMe
+                                ? Colors.indigo.shade600
+                                : Colors.grey.shade300,
+                            borderRadius: BorderRadius.circular(12.0),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: isMe
+                                ? CrossAxisAlignment.end
+                                : CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                msg.text,
+                                style: TextStyle(
+                                  color: isMe ? Colors.white : Colors.black87,
+                                  fontSize: 15,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                msg.timestamp,
+                                style: TextStyle(
+                                  color: isMe ? Colors.white70 : Colors.black54,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          msg['time'],
-                          style: TextStyle(
-                            color: isMe ? Colors.white70 : Colors.black54,
-                            fontSize: 11,
-                          ),
-                        ),
-                      ],
-                    ),
+                      );
+                    },
                   ),
-                );
-              },
-            ),
           ),
           Padding(
             padding: const EdgeInsets.all(8.0),
             child: Row(
               children: [
-                IconButton(
-                  icon: const Icon(Icons.photo),
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Fitur kirim foto akan diintegrasikan')),
-                    );
-                  },
-                ),
                 Expanded(
                   child: TextField(
                     controller: _textController,
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => _sendMessage(),
                     decoration: InputDecoration(
                       hintText: 'Ketik pesan offline...',
                       border: OutlineInputBorder(
@@ -254,7 +301,3 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
     );
   }
 }
-
-// Helper alignment
-CrossAxisAlignment CrossCastAlignEnd(CrossAxisAlignment val) => CrossAxisAlignment.end;
-CrossAxisAlignment CrossCastAlignStart(CrossAxisAlignment val) => CrossAxisAlignment.start;
